@@ -7,7 +7,9 @@
 | Họ và tên | Đoàn Duy Bách |
 | MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `2A202602515` |
 | GitHub | DuyBach2003 |
-| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `trip-03904` (MSSV có chữ `A` nên lấy các chữ số `2202602515 % 26 = 9` → phần tử thứ 9 của `list-trips`) |
+| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `trip-03904` |
+
+Ghi chú: MSSV có chữ `A` nên lệnh `int(MSSV) % 26` trong GUIDE báo lỗi. Tôi lấy các chữ số của MSSV: `2202602515 % 26 = 9` → phần tử thứ 9 của `list-trips` là `trip-03904`. Máy tôi có project khác chiếm cổng 8080/5433/3000, nên tôi đổi cổng phía host bằng `docker-compose.override.yml` cục bộ (không commit, `docker-compose.yml` giữ nguyên): Airflow 8081, Postgres 5434, Metabase 3001.
 
 ## Kết quả cuối
 
@@ -120,7 +122,7 @@ Hai lần chạy liên tiếp: `step all --reset`, `step 4` và `cli export-data
 Mô tả chính xác điều xảy ra khi trip của bạn sập rồi chạy lại: bao nhiêu task chuyển đỏ, bao nhiêu task `upstream_failed`, bạn clear gì, dữ liệu có nhân đôi không, `dataset_version` có đổi không? Bằng chứng (ảnh, số) là gì?
 
 Trip của tôi là `trip-03904` (map index 9 trong 26 task `silver_frames`). Đặt `LAB_FAIL_ONCE=trip-03904`, `docker compose --profile orchestrate up -d`, trigger `day09_reset` (xanh, xoá cả marker `/opt/work/.failed-*`), rồi trigger `day09_video_pipeline` (run `manual__2026-10-12T09:41:04+00:00`):
-- **1 task đỏ**: `silver_frames` map index 9. Log (`report/screenshots/crash_log_trip-03904.png`): `RuntimeError: simulated crash while extracting trip-03904; run it again`. Lỗi xảy ra trước khi ghi Delta, nên bảng không nhận commit dở nào.
+- **1 task đỏ**: `silver_frames` map index 9. Log (`report/screenshots/crash_log_trip-03904.png`): `RuntimeError: simulated crash while extracting trip-03904; run it again`. Theo `pipeline/frames.py`, lỗi xảy ra ngay đầu `extract_trip` (`_fail_once`), trước khi giải mã video và trước khi ghi Delta, nên bảng không có commit dở nào; marker `/opt/work/.failed-trip-03904` đảm bảo lần chạy thứ hai không sập.
 - **25 task `silver_frames` khác vẫn xanh**: mỗi trip là một task độc lập, một trip hỏng không kéo các trip khác.
 - **7 task `upstream_failed`**: `dbt_run_silver`, `dbt_test_silver`, `dbt_run_gold`, `dbt_test_gold`, `publish_lake`, `export_dataset`, `publish_warehouse` (`report/screenshots/crash_graph_red.png`). Dữ liệu thiếu một trip không đi tiếp tới gold/warehouse.
 
@@ -181,7 +183,6 @@ drive_a: <20 km/h **32.4%**, 20–50 km/h 22.6%, ≥50 km/h 25.8%; drive_b: 20�
 
 Điều bạn thấy bất ngờ nhất, điều gì còn chưa rõ, và một lỗi dữ liệu mà bạn nghĩ pipeline **chưa** bắt được (nếu có). Tối đa 8 dòng.
 
-- **Bất ngờ nhất**: chia theo khung hình làm **26/26** trip bị rò rỉ sang test. Tôi nghĩ chỉ vài trip bị ảnh hưởng, hoá ra chia ngẫu nhiên gần như chắc chắn làm hỏng mọi trip. Thứ hai: `dataset_version` không đổi sau khi task sập rồi chạy lại, dù version Delta của `silver.frames` đã khác.
-- **Chưa rõ**: `dHash` ở 2 khung/giây có nên coi cảnh đường cao tốc đơn điệu là "trùng" không (trip-04622 mất 56.7% ở 65 km/h); và vì sao verify chỉ yêu cầu bắt 11/12 khung đứng hình (khung đầu tiên của đoạn đứng hình vẫn khác khung trước nó nên hợp lý, nhưng tôi chưa kiểm chứng).
-- **Lỗi pipeline chưa bắt**: (1) **cả 26 trip đều là ban ngày (`Day`, `Clouds`)**; không có test nào cảnh báo dataset thiếu cảnh đêm/mưa, nên mô hình sẽ bị lệch mà cổng chất lượng vẫn xanh. (2) Telemetry chỉ kiểm tra tốc độ trong 0–70 m/s, không kiểm tra **gia tốc vật lý** (tốc độ nhảy đột ngột giữa hai mẫu liền nhau) hay GPS nhảy, nên lỗi kiểu 30 → 0 → 30 m/s vẫn lọt. (3) Độ lệch đồng hồ của B được **khai báo** trong `sources.json` chứ không được đo; nếu đồng hồ trôi theo thời gian hoặc khai sai, test chỉ kiểm tra mẫu đầu tiên (±0.5 s) nên trôi ở giữa chuyến sẽ không bị phát hiện.
-- **Ghi chú môi trường**: máy tôi có project khác chiếm cổng 8080/5433/3000, nên tôi dùng file `docker-compose.override.yml` cục bộ (không commit, không sửa `docker-compose.yml`) để map Airflow → 8081, Postgres → 5434, Metabase → 3001, và chạy `setup_metabase.py` bằng bản sao trỏ tới cổng 3001. MSSV có chữ `A` nên lệnh tính trip trong GUIDE (`int(MSSV)`) lỗi; tôi lấy phần chữ số.
+- **Bất ngờ nhất**: chia theo khung hình làm **26/26** trip rò rỉ sang test, không phải chỉ vài trip. Và `dataset_version` giữ nguyên sau khi task sập rồi chạy lại, dù version Delta của `silver.frames` đã đổi.
+- **Chưa rõ**: có nên coi cảnh đường cao tốc đơn điệu là "trùng" không, vì trip-04622 mất 56.7% số khung khi xe chạy khoảng 65 km/h. Có lẽ ngưỡng dHash nên phụ thuộc vào tốc độ.
+- **Lỗi pipeline chưa bắt**: (1) cả 26 trip đều là `Day, Clouds`, nhưng không có test nào cảnh báo dataset thiếu cảnh đêm hoặc mưa. (2) Telemetry chỉ được kiểm tra trong khoảng 0–70 m/s, không kiểm tra gia tốc phi vật lý (30 → 0 → 30 m/s giữa hai mẫu liền nhau) hay GPS nhảy. (3) Độ lệch đồng hồ của B lấy theo khai báo chứ không đo, và test chỉ kiểm tra mẫu đầu tiên (±0.5 s), nên đồng hồ trôi dần trong chuyến sẽ không bị phát hiện.
