@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| Họ và tên | `<điền>` |
-| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `<điền>` |
-| GitHub | `<điền: tên tài khoản>` |
-| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `<điền: trip-xxxxx>` |
+| Họ và tên | Đoàn Duy Bách |
+| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `2A202602515` |
+| GitHub | DuyBach2003 |
+| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `trip-03904` (MSSV có chữ `A` nên lấy các chữ số `2202602515 % 26 = 9` → phần tử thứ 9 của `list-trips`) |
 
 ## Kết quả cuối
 
@@ -21,7 +21,17 @@
 ### Câu 1
 Liệt kê **ít nhất 4 khác biệt** giữa telemetry nguồn A và nguồn B mà bạn thấy ở bronze. Vì sao pipeline giữ **mỗi nguồn một bảng bronze** và để mọi cột ở dạng chữ, thay vì gộp và ép kiểu ngay?
 
-(trả lời ở đây)
+Năm khác biệt thấy trực tiếp ở hai bảng bronze (`raw_telemetry_a` 3021 dòng, `raw_telemetry_b` 3234 dòng):
+
+| | Nguồn A | Nguồn B |
+|---|---|---|
+| Tên cột | `ts_utc, speed_mps, heading_deg, lat, lon, alt_m, acc_x, acc_y, gas, brake, steer` | `timestamp_ms, spd_kmh, hdg, latitude, longitude, altitude, ax, ay, throttle_pct, brake_pct, steering` |
+| Timestamp | chuỗi ISO UTC `2025-10-07T08:00:00.014Z` | epoch mili-giây `1759933801509` |
+| Tốc độ | m/s (`1.213`) | km/h (`55.11`) |
+| Bàn đạp ga/phanh | tỉ lệ 0–1 (`gas=0.028`) | phần trăm (`throttle_pct=2.0`) |
+| Đồng hồ | khớp video (`telemetry_clock_offset_ms = 0`) | chạy nhanh hơn video **1500 ms** (`bronze_video_files`): mẫu đầu `1759933801509` = 14:30:01.509 trong khi video bắt đầu 14:30:00 |
+
+Giữ mỗi nguồn một bảng vì hai schema khác nhau: gộp ngay buộc phải chọn tên cột, đơn vị và cách sửa đồng hồ ngay lúc nạp, và nếu chọn sai thì bản gốc đã mất. Mọi cột ở dạng `VARCHAR` (kiểm tra bằng `information_schema`, chỉ `_row_no` và `_ingested_at` là cột kỹ thuật có kiểu) để bronze **không bao giờ từ chối hay làm méo dữ liệu**: ô trống, `speed` vô lý hay timestamp lệch vẫn được ghi đúng như nguồn gửi, có `_source_file`, `_batch_id`, `_row_no` để truy về dòng CSV. Ép kiểu và luật nghiệp vụ để ở silver (dbt), nên khi luật đổi ta chỉ cần chạy lại silver từ bronze, không phải nạp lại từ nguồn. Bronze cũng idempotent: lần nạp thứ hai báo `already present` vì file được nhận diện bằng sha256 (`636ba1a9…` cho A, `bfa62703…` cho B), và `cli history bronze.raw_telemetry_a` chỉ có **một commit** (version 0, `rows_added: 3021`).
 
 ## Bước 2 · Silver telemetry
 
