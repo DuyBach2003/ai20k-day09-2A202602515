@@ -86,12 +86,16 @@ Khung hình **đen** và khung hình **tối** khác nhau thế nào, pipeline x
 ### Câu 6
 Dựa vào `leakage.json`: chia theo khung hình làm bao nhiêu trip bị chia cắt, so với chia theo trip? Vì sao điều này làm điểm kiểm thử đẹp một cách giả tạo?
 
-(trả lời ở đây)
+`leakage.json`: 1020 khung đáng dùng thuộc 26 trip. Chia **theo khung hình** (ngẫu nhiên 70/15/15): **26/26 trip** bị chia cắt qua nhiều split, và cả **26 trip có khung ở cả train lẫn test** (`per_frame_split_trips_in_both_train_and_test: 26`). Chia **theo trip** (gold của pipeline): **0 trip** bị chia cắt (`per_trip_split_trips_straddling: 0`), dbt test `no_straddle` cũng PASS. Split của tôi: train 711 khung/18 trip, val 146/4, test 163/4.
+
+Vì sao điểm đẹp giả tạo: ở 2 khung/giây, hai khung liền nhau của cùng một trip gần như giống hệt (cùng đường, cùng ánh sáng, cùng xe phía trước; thí nghiệm ngưỡng cho thấy hàng trăm cặp liền nhau chỉ khác ≤ 6 bit dHash). Chia theo khung thì với mỗi ảnh test, mô hình gần như chắc chắn đã thấy "anh em sinh đôi" của nó trong train, nên chỉ cần nhớ cảnh chứ không cần tổng quát hoá. Điểm test khi đó đo khả năng **nhớ** chứ không phải khả năng lái trên **cảnh mới**; khi triển khai trên đường chưa từng thấy, độ chính xác tụt mạnh. Chia theo trip (cảnh) mô phỏng đúng tình huống thật: test là những đoạn đường mô hình chưa từng gặp.
 
 ### Câu 7
 Vì sao `dataset_version` là **băm nội dung** chứ không phải ngày giờ hay số đếm? Hai lần chạy liên tiếp cho kết quả gì? Vì sao `dataset_version` của bạn **khác** bạn bè dù cùng dữ liệu (liên hệ MSSV)?
 
-(trả lời ở đây)
+`dataset_version = sha256("frame_id|split" của mọi khung, sắp theo frame_id)[:12]` (`pipeline/publish.py`). Nó là **băm nội dung** nên trả lời đúng câu "hai dataset có giống nhau không?": cùng khung + cùng split ⇒ cùng version; thêm/bớt một khung hoặc một khung đổi split ⇒ version khác. Dùng ngày giờ hay số đếm thì chạy lại cùng dữ liệu cũng ra version mới (không biết hai bản có trùng nhau không), còn hai máy chạy song song có thể cùng số đếm nhưng khác nội dung. Băm nội dung cũng làm việc xuất ảnh idempotent: ảnh trong `gold/datasets/<version>/` đã có thì không chép lại.
+
+Hai lần chạy liên tiếp: `step all --reset`, `step 4` và `cli export-dataset` đều cho **`275d97e86de7`** (1020 khung; train/val/test = 711/146/163), dù `created_at` khác nhau. MSSV được trộn vào thứ tự trip: `row_number() over (partition by drive_id order by md5(trip_id || LAB_STUDENT_ID))`, nên MSSV khác ⇒ trip khác rơi vào train/val/test ⇒ cặp `frame_id|split` khác ⇒ băm khác. Tôi thử đặt `LAB_STUDENT_ID=2024000`: version thành **`7ff13908378c`**, vẫn 1020 khung và vẫn 18/4/4 trip, nhưng số khung train/val/test thành 703/183/134. Đặt lại `2A202602515` thì về đúng `275d97e86de7`. Tức là **tập khung không đổi, chỉ cách chia đổi**, và version phản ánh đúng điều đó; giảng viên chạy lại với MSSV của tôi phải ra đúng `275d97e86de7`.
 
 ### Câu 8
 Đọc phần `lineage` trong `manifest.json` của dataset bạn. Trả lời "dataset này được tạo từ dữ liệu nào?" bằng chính nội dung đó. Nếu một người hỏi 3 tháng sau, thông tin nào giúp tái tạo lại đúng dataset này?
