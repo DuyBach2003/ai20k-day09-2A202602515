@@ -38,12 +38,26 @@ Giữ mỗi nguồn một bảng vì hai schema khác nhau: gộp ngay buộc ph
 ### Câu 2
 Pipeline đưa hai nguồn về một schema như thế nào (đơn vị, kiểu thời gian, **độ lệch đồng hồ**)? Bằng chứng nào trong kết quả bước 2 cho thấy đã đúng? Dán bảng quarantine của bạn (số dòng theo từng lý do, từng drive) và giải thích vì sao dòng lỗi vào `rejects` thay vì bị xoá.
 
-(trả lời ở đây)
+`stg_telemetry_a.sql` và `stg_telemetry_b.sql` đưa cả hai về cùng một bộ cột (`ts, speed_mps, heading_deg, lat, lon, …, gas, brake, steer`):
+- **Đơn vị**: B có `spd_kmh / 3.6` → m/s, `throttle_pct / 100` và `brake_pct / 100` → tỉ lệ 0–1 như A.
+- **Kiểu thời gian**: A `cast(ts_utc as timestamptz)`; B `to_timestamp(timestamp_ms / 1000.0)` → cùng kiểu timestamp UTC.
+- **Độ lệch đồng hồ**: B trừ `telemetry_clock_offset_ms` (1500 ms, khai báo trong `sources.json`, lưu ở `bronze.video_files`) **trước** khi đổi sang timestamp. Sau đó `silver_telemetry_classified` gộp bằng `union all by name` và gắn `reject_reason` cho từng dòng.
+
+Bằng chứng đúng: bảng sau chuẩn hoá cho `bat_dau` của B = `2025-10-08 14:30:00.009` (bronze là `…01.509`, tức đã trừ đúng 1,5 s, khớp giờ bắt đầu video 14:30:00), A = `2025-10-07 08:00:00.014`; tốc độ tối đa 71 km/h (A) và 100 km/h (B), hợp lý cho xe chạy đường phố (nếu quên chia 3.6 thì B sẽ lên 360 "km/h"). Verify module 2: 7/7, `clean + quarantined == received` (A: 2968 + 53 = 3021; B: 3181 + 53 = 3234).
+
+| drive | duplicate | speed_missing | speed_out_of_range | tổng cách ly | sạch |
+|---|---|---|---|---|---|
+| drive_a | 20 | 30 | 3 | 53 | 2968 |
+| drive_b | 20 | 30 | 3 | 53 | 3181 |
+
+(3 dòng `speed_out_of_range` của mỗi drive đều là 250 m/s = 900 km/h.) Dòng lỗi vào `silver_telemetry_rejects` (106 dòng, kèm `_batch_id`, `_row_no`) thay vì bị xoá vì: (1) **kiểm toán được** — tổng sạch + cách ly luôn bằng số nhận về, không mất dòng im lặng; (2) **truy được nguồn** để báo lại nhà cung cấp cảm biến; (3) **sửa được** — nếu luật sai (ví dụ ngưỡng 70 m/s quá chặt) thì chỉ cần đổi luật và chạy lại, dòng bị loại không mất; (4) tỉ lệ cách ly theo thời gian là một chỉ số giám sát chất lượng nguồn.
 
 ### Câu 3
 Vì sao test `max_gap_ms` là `warn` còn `in_range` là `error`? Kết quả thí nghiệm `break-gate` của bạn (`break_gate.json`): test nào bắt được, bao nhiêu dòng, và điều đó cho biết gì về vai trò của "cổng chất lượng"?
 
-(trả lời ở đây)
+`max_gap_ms` kiểm tra **độ đầy đủ**: khoảng trống giữa hai mẫu liên tiếp > 1000 ms. Ở dữ liệu của tôi nó bắt **1 khoảng trống mỗi drive** (A: 3073 ms, B: 3124 ms) — cảm biến mất tín hiệu khoảng 3 s. Đây là khiếm khuyết thật của thế giới, dữ liệu còn lại vẫn đúng và dùng được (khung hình rơi vào khoảng trống sẽ bị loại ở bước sau vì `sync_lost`), nên chỉ `warn`: báo cho người vận hành nhưng không dừng pipeline. `in_range` (0–70 m/s) kiểm tra **tính đúng**: một tốc độ vô lý lọt vào silver nghĩa là luật làm sạch đã hỏng, mọi bảng phía sau (gold, mart, nhãn tốc độ cho mô hình) sẽ sai, nên phải `error` để chặn.
+
+Thí nghiệm `break-gate` (`break_gate.json`): nới `max_speed_mps` từ 70 lên 1000 → 6 dòng 250 m/s (3 mỗi drive) không còn bị cách ly mà lọt vào `silver_telemetry`. `dbt test` ra `PASS=5 WARN=1 ERROR=1`: test `in_range_silver_telemetry_speed_mps__70__0` **bắt được 6 dòng**, `gate_failed: true`. Khôi phục luật: `PASS=6 WARN=1 ERROR=0`. Ý nghĩa: luật làm sạch (trong model) và cổng chất lượng (test) là **hai lớp độc lập**. Khi ai đó sửa nhầm luật, cổng vẫn đứng đó và trong DAG Airflow test `error` làm các task phía sau không chạy, nên dữ liệu xấu không đi tới gold/warehouse. Cổng chỉ hiệu quả khi ngưỡng của nó không bị nới cùng lúc với luật.
 
 ## Bước 3 · Silver frames
 
