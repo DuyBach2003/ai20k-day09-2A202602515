@@ -64,18 +64,22 @@ Thí nghiệm `break-gate` (`break_gate.json`): nới `max_speed_mps` từ 70 l�
 ### Câu 4
 Dựa vào `idempotency.json`: số dòng trước và sau hai lần chạy lại, và khi ghi kiểu `append`. Vì sao Delta `overwrite` theo partition (một trip) an toàn hơn xoá rồi ghi lại, nhất là khi giữa chừng có lỗi?
 
-(trả lời ở đây)
+Tôi chạy `exp idempotency --trip trip-03904` (chính trip dùng cho bài tập sập). Bảng `silver.frames` trước: **1246 dòng**, dấu vân tay `cb6118dbb0b8`; sau **hai lần** chạy lại partition đó: vẫn **1246 dòng**, vân tay `cb6118dbb0b8` (`unchanged: true`). `cli history silver.frames` cho thấy hai commit mới (version 26 và 27), mỗi commit là `WRITE` với `predicate: trip_id = 'trip-03904'`, `rows_added: 22` — tức thay đúng 22 dòng của trip đó, các trip khác không bị chạm. Với cách ghi sai `append` chạy 2 lần, trip 22 khung thành **44 dòng** (nhân đôi), và mọi bảng phía sau (gold, gallery) sẽ có khung trùng.
+
+Delta `overwrite` với `predicate` an toàn hơn "xoá rồi ghi lại" vì **xoá dòng cũ và thêm dòng mới nằm trong cùng một commit nguyên tử** vào `_delta_log`. Nếu task sập giữa chừng (như bài tập bước 5), file Parquet đã ghi dở không được commit nên người đọc vẫn thấy phiên bản cũ đầy đủ; chạy lại chỉ cần ghi đè lại đúng partition. Với "DELETE rồi INSERT" là hai thao tác riêng: sập sau DELETE thì trip đó **biến mất** khỏi bảng, người đọc đồng thời thấy dữ liệu thiếu, và nếu retry chỉ INSERT thì dễ nhân đôi. Ngoài ra Delta giữ lịch sử nên có thể time travel về version trước nếu lần ghi mới sai.
 
 ### Câu 5
 Khung hình **đen** và khung hình **tối** khác nhau thế nào, pipeline xử lý khác nhau ra sao, bạn có đồng ý không? Dựa vào `threshold.json`: nếu chọn ngưỡng 0, 2, 6 thì bao nhiêu khung bị coi là trùng ở mỗi drive? Bạn chọn ngưỡng nào, vì sao, và ngưỡng đó phụ thuộc vào tốc độ xe thế nào?
 
+**Khung đen** (`brightness < 12`, `dark_luma`) là ảnh hỏng: camera/cảm biến mất tín hiệu, không có thông tin gì — độ sáng thực tế = 0.0 ở cả hai drive (A: 6 khung, B: 4 khung). Pipeline gắn `is_black` và **loại khỏi gold**; còn có test `max_share` dừng pipeline nếu > 10% khung đen (camera hỏng). **Khung tối** (`12 ≤ brightness < 40`, `dark_soft`) là điều kiện thật: đường hầm, bóng râm, chạng vạng (B có độ sáng 12.8–39.6). Pipeline chỉ gắn `is_dark` và **giữ lại** (A: 4, B: 61). Tôi đồng ý: mô hình xe tự lái phải học được cả cảnh tối, bỏ chúng sẽ làm dataset thiên lệch về cảnh sáng và mô hình hỏng đúng ở tình huống nguy hiểm nhất. Riêng khung mờ chỉ tính khi không đen (`is_blurry` cần `brightness ≥ 12`) để một khung không bị đếm hai lý do.
+
 | dHash khác tối đa | số khung trùng, drive A | số khung trùng, drive B |
 |---|---|---|
-| 0 | | |
-| 2 | | |
-| 6 | | |
+| 0 | 60 | 8 |
+| 2 | 149 | 52 |
+| 6 | 363 | 244 |
 
-(trả lời ở đây)
+(trên tổng 602 khung A và 644 khung B; ngưỡng 1/4/8: A 109/270/438, B 24/137/350.) Tôi giữ **ngưỡng 2**: ngưỡng 0 bỏ sót đứng hình vì nén video làm vài bit dHash thay đổi dù cảnh không đổi (verify bắt được 11/12 khung đứng hình ở ngưỡng 2); ngưỡng 6 loại 60% khung của A và 38% của B, tức loại cả những khung khác nhau thật. Từ 2 lên 4, số khung trùng của B tăng gần 3 lần (52 → 137), dấu hiệu bắt đầu ăn vào khung thật. Ngưỡng phụ thuộc tốc độ: ở 2 khung/giây, xe đứng yên/chạy chậm thì hai khung liền nhau gần như giống hệt — trong dữ liệu của tôi, khung ở tốc độ 0–2 m/s bị coi là trùng **59.3%** (54/91, toàn ở drive A), còn 2–15 m/s chỉ ~8–10%. Ở ≥15 m/s tỉ lệ lại lên 14.4% vì A có 6 s camera đứng hình và cảnh đường cao tốc ít chi tiết. Nếu chỉnh, tôi sẽ cho ngưỡng thay đổi theo tốc độ (chặt hơn khi xe đứng yên, hoặc dùng thêm `speed_mps≈0` để chỉ lấy mẫu thưa hơn), và giữ ngưỡng thấp khi xe chạy nhanh.
 
 ## Bước 4 · Gold
 
